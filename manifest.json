@@ -1,0 +1,12 @@
+{
+  "name": "Bonnie Farm Management System",
+  "short_name": "Bonnie Farm",
+  "description": "Bonnie Farm offline sales and expense management system",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#1f4e78",
+  "lang": "en-GB",
+  "icons": []
+}
