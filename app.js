@@ -3,7 +3,7 @@ const BF = (() => {
   const CONFIG = {
 
     API_URL:
-      "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE",
+      "https://script.google.com/macros/s/AKfycbwhq-6k8TJIL_4kRHVDuZjl4AySybKMSpAfvut_4ulCLxihInSFECrVGQn9SVPSngkpuA/exec"
 
     API_KEY:
       "3kdBDIxKhBBqhLDOST3hVhQfQ2qY7kM9",
