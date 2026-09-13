@@ -1,10 +1,26 @@
 const BF = (() => {
 
+  /************************************************
+   * BONNIE FARM PWA CONFIGURATION
+   ************************************************/
+
   const CONFIG = {
 
+    /*
+     * IMPORTANT:
+     * Replace this with your DEPLOYED Google Apps Script
+     * Web App URL ending in /exec.
+     *
+     * Example:
+     * https://script.google.com/macros/s/XXXXXXXX/exec
+     */
     API_URL:
-      "https://script.google.com/macros/s/AKfycbwhq-6k8TJIL_4kRHVDuZjl4AySybKMSpAfvut_4ulCLxihInSFECrVGQn9SVPSngkpuA/exec"
+      https://script.google.com/macros/s/AKfycbwb6AppjVWGyZXWEGy6DWkGFjgqNaUrBJX8H8_ViEH9phTPHwr2xO2Kr3IUpA7bRWy7QQ/exec
 
+    /*
+     * This must match BF_PWA_CONFIG.API_KEY
+     * in your Google Apps Script.
+     */
     API_KEY:
       "3kdBDIxKhBBqhLDOST3hVhQfQ2qY7kM9",
 
@@ -15,12 +31,24 @@ const BF = (() => {
       1,
 
     STORE:
-      "pendingRecords"
+      "pendingRecords",
+
+    SYNC_TIMEOUT:
+      30000,
+
+    SYNC_INTERVAL:
+      30000
 
   };
 
 
   let db = null;
+
+  /*
+   * Prevent two synchronisation processes from
+   * running at the same time.
+   */
+  let syncInProgress = false;
 
 
   /************************************************
@@ -36,6 +64,7 @@ const BF = (() => {
           CONFIG.DB_NAME,
           CONFIG.DB_VERSION
         );
+
 
       request.onupgradeneeded =
         event => {
@@ -57,16 +86,22 @@ const BF = (() => {
                 }
               );
 
+
             store.createIndex(
               "type",
               "type",
-              { unique: false }
+              {
+                unique: false
+              }
             );
+
 
             store.createIndex(
               "status",
               "status",
-              { unique: false }
+              {
+                unique: false
+              }
             );
 
           }
@@ -80,6 +115,21 @@ const BF = (() => {
           db =
             event.target.result;
 
+          /*
+           * If the database connection closes,
+           * allow the next operation to reopen it.
+           */
+          db.onclose = () => {
+            db = null;
+          };
+
+          db.onerror = event => {
+            console.error(
+              "IndexedDB error:",
+              event.target.error
+            );
+          };
+
           resolve(db);
 
         };
@@ -89,12 +139,26 @@ const BF = (() => {
         () => {
 
           reject(
-            request.error
+            request.error ||
+            new Error(
+              "Unable to open offline database."
+            )
           );
 
         };
 
     });
+
+  }
+
+
+  async function ensureDatabase() {
+
+    if (!db) {
+      await openDatabase();
+    }
+
+    return db;
 
   }
 
@@ -118,12 +182,17 @@ const BF = (() => {
         const request =
           store.put(record);
 
+
         request.onsuccess =
           () => resolve();
 
+
         request.onerror =
           () => reject(
-            request.error
+            request.error ||
+            new Error(
+              "Unable to save record locally."
+            )
           );
 
       }
@@ -151,14 +220,19 @@ const BF = (() => {
         const request =
           store.getAll();
 
+
         request.onsuccess =
           () => resolve(
             request.result || []
           );
 
+
         request.onerror =
           () => reject(
-            request.error
+            request.error ||
+            new Error(
+              "Unable to read offline records."
+            )
           );
 
       }
@@ -188,12 +262,17 @@ const BF = (() => {
             offlineId
           );
 
+
         request.onsuccess =
           () => resolve();
 
+
         request.onerror =
           () => reject(
-            request.error
+            request.error ||
+            new Error(
+              "Unable to delete local record."
+            )
           );
 
       }
@@ -221,7 +300,7 @@ const BF = (() => {
 
 
   /************************************************
-   * DATE
+   * DATE FUNCTIONS
    ************************************************/
 
   function today() {
@@ -242,6 +321,7 @@ const BF = (() => {
         date.getDate()
       ).padStart(2, "0");
 
+
     return (
       year +
       "-" +
@@ -255,10 +335,20 @@ const BF = (() => {
 
   function dayName(dateString) {
 
+    if (!dateString) {
+      return "";
+    }
+
     const date =
       new Date(
         dateString + "T00:00:00"
       );
+
+
+    if (isNaN(date.getTime())) {
+      return "";
+    }
+
 
     return date.toLocaleDateString(
       "en-GB",
@@ -271,103 +361,216 @@ const BF = (() => {
 
 
   /************************************************
+   * VALIDATE API CONFIGURATION
+   ************************************************/
+
+  function apiConfigured() {
+
+    return (
+      CONFIG.API_URL &&
+      CONFIG.API_URL !==
+        "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE" &&
+      /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(
+        CONFIG.API_URL
+      )
+    );
+
+  }
+
+
+  /************************************************
    * SAVE SALE
    ************************************************/
 
   async function saveSale() {
 
-    const date =
-      document.getElementById(
-        "saleDate"
-      ).value;
+    try {
 
-    const record = {
+      await ensureDatabase();
 
-      offlineId:
-        createOfflineId(),
 
-      type:
-        "sale",
-
-      status:
-        "pending",
-
-      createdAt:
-        new Date().toISOString(),
-
-      day:
+      const date =
         document.getElementById(
-          "saleDay"
-        ).value.trim(),
+          "saleDate"
+        ).value;
 
-      date:
 
-        date,
+      const record = {
 
-      product:
-        document.getElementById(
-          "saleProduct"
-        ).value,
+        offlineId:
+          createOfflineId(),
 
-      quantity:
-        Number(
+        type:
+          "sale",
+
+        status:
+          "pending",
+
+        createdAt:
+          new Date().toISOString(),
+
+        day:
           document.getElementById(
-            "saleQuantity"
-          ).value
-        ),
+            "saleDay"
+          ).value.trim(),
 
-      amount:
-        Number(
+        date:
+          date,
+
+        product:
           document.getElementById(
-            "saleAmount"
-          ).value
-        ),
+            "saleProduct"
+          ).value,
 
-      customer:
+        quantity:
+          Number(
+            document.getElementById(
+              "saleQuantity"
+            ).value
+          ),
+
+        amount:
+          Number(
+            document.getElementById(
+              "saleAmount"
+            ).value
+          ),
+
+        customer:
+          document.getElementById(
+            "saleCustomer"
+          ).value.trim(),
+
+        soldBy:
+          document.getElementById(
+            "saleSoldBy"
+          ).value,
+
+        remarks:
+          document.getElementById(
+            "saleRemarks"
+          ).value.trim()
+
+      };
+
+
+      /*
+       * Basic validation.
+       */
+
+      if (!record.date) {
+
+        showMessage(
+          "Please select the sale date."
+        );
+
+        return;
+
+      }
+
+
+      if (!record.product) {
+
+        showMessage(
+          "Please select a product."
+        );
+
+        return;
+
+      }
+
+
+      if (
+        !Number.isFinite(record.quantity) ||
+        record.quantity <= 0
+      ) {
+
+        showMessage(
+          "Please enter a valid sale quantity."
+        );
+
+        return;
+
+      }
+
+
+      if (
+        !Number.isFinite(record.amount) ||
+        record.amount < 0
+      ) {
+
+        showMessage(
+          "Please enter a valid sale amount."
+        );
+
+        return;
+
+      }
+
+
+      if (!record.day) {
+
+        record.day =
+          dayName(
+            record.date
+          );
+
+      }
+
+
+      /*
+       * Save locally FIRST.
+       *
+       * This guarantees that the sale is not lost
+       * even when the Internet fails.
+       */
+
+      await addRecord(record);
+
+
+      const salesForm =
         document.getElementById(
-          "saleCustomer"
-        ).value.trim(),
+          "salesForm"
+        );
 
-      soldBy:
-        document.getElementById(
-          "saleSoldBy"
-        ).value,
-
-      remarks:
-        document.getElementById(
-          "saleRemarks"
-        ).value.trim()
-
-    };
+      if (salesForm) {
+        salesForm.reset();
+      }
 
 
-    if (!record.day) {
-
-      record.day =
-        dayName(record.date);
-
-    }
+      setDefaultDates();
 
 
-    await addRecord(record);
+      showMessage(
+        "Sale saved on this device. " +
+        "It will synchronise automatically."
+      );
 
-    document
-      .getElementById(
-        "salesForm"
-      )
-      .reset();
 
-    setDefaultDates();
+      await updateCounters();
 
-    showMessage(
-      "Sale saved on this device. It will synchronise automatically."
-    );
 
-    updateCounters();
+      /*
+       * Try synchronisation immediately when online.
+       */
 
-    if (navigator.onLine) {
+      if (navigator.onLine) {
 
-      syncAll();
+        await syncAll();
+
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Save sale error:",
+        error
+      );
+
+      showMessage(
+        "Sale was saved locally, but an error occurred: " +
+        error.message
+      );
 
     }
 
@@ -380,98 +583,186 @@ const BF = (() => {
 
   async function saveExpense() {
 
-    const date =
-      document.getElementById(
-        "expenseDate"
-      ).value;
+    try {
 
-    const record = {
+      await ensureDatabase();
 
-      offlineId:
-        createOfflineId(),
 
-      type:
-        "expense",
-
-      status:
-        "pending",
-
-      createdAt:
-        new Date().toISOString(),
-
-      day:
+      const date =
         document.getElementById(
-          "expenseDay"
-        ).value.trim(),
+          "expenseDate"
+        ).value;
 
-      date:
 
-        date,
+      const record = {
 
-      description:
-        document.getElementById(
-          "expenseDescription"
-        ).value.trim(),
+        offlineId:
+          createOfflineId(),
 
-      quantity:
-        Number(
+        type:
+          "expense",
+
+        status:
+          "pending",
+
+        createdAt:
+          new Date().toISOString(),
+
+        day:
           document.getElementById(
-            "expenseQuantity"
-          ).value
-        ),
+            "expenseDay"
+          ).value.trim(),
 
-      amount:
-        Number(
+        date:
+          date,
+
+        description:
           document.getElementById(
-            "expenseAmount"
-          ).value
-        ),
+            "expenseDescription"
+          ).value.trim(),
 
-      supplier:
+        quantity:
+          Number(
+            document.getElementById(
+              "expenseQuantity"
+            ).value
+          ),
+
+        amount:
+          Number(
+            document.getElementById(
+              "expenseAmount"
+            ).value
+          ),
+
+        supplier:
+          document.getElementById(
+            "expenseSupplier"
+          ).value.trim(),
+
+        paidBy:
+          document.getElementById(
+            "expensePaidBy"
+          ).value.trim(),
+
+        categories:
+          document.getElementById(
+            "expenseCategory"
+          ).value.trim()
+
+      };
+
+
+      /*
+       * Basic validation.
+       */
+
+      if (!record.date) {
+
+        showMessage(
+          "Please select the expense date."
+        );
+
+        return;
+
+      }
+
+
+      if (!record.description) {
+
+        showMessage(
+          "Please enter the expense description."
+        );
+
+        return;
+
+      }
+
+
+      if (
+        !Number.isFinite(record.quantity) ||
+        record.quantity < 0
+      ) {
+
+        showMessage(
+          "Please enter a valid expense quantity."
+        );
+
+        return;
+
+      }
+
+
+      if (
+        !Number.isFinite(record.amount) ||
+        record.amount <= 0
+      ) {
+
+        showMessage(
+          "Please enter a valid expense amount."
+        );
+
+        return;
+
+      }
+
+
+      if (!record.day) {
+
+        record.day =
+          dayName(
+            record.date
+          );
+
+      }
+
+
+      /*
+       * Save locally FIRST.
+       */
+
+      await addRecord(record);
+
+
+      const expenseForm =
         document.getElementById(
-          "expenseSupplier"
-        ).value.trim(),
+          "expenseForm"
+        );
 
-      paidBy:
-        document.getElementById(
-          "expensePaidBy"
-        ).value.trim(),
-
-      categories:
-        document.getElementById(
-          "expenseCategory"
-        ).value.trim()
-
-    };
+      if (expenseForm) {
+        expenseForm.reset();
+      }
 
 
-    if (!record.day) {
-
-      record.day =
-        dayName(record.date);
-
-    }
+      setDefaultDates();
 
 
-    await addRecord(record);
+      showMessage(
+        "Expense saved on this device. " +
+        "It will synchronise automatically."
+      );
 
-    document
-      .getElementById(
-        "expenseForm"
-      )
-      .reset();
 
-    setDefaultDates();
+      await updateCounters();
 
-    showMessage(
-      "Expense saved on this device. It will synchronise automatically."
-    );
 
-    updateCounters();
+      if (navigator.onLine) {
 
-    if (navigator.onLine) {
+        await syncAll();
 
-      syncAll();
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Save expense error:",
+        error
+      );
+
+      showMessage(
+        "Expense was saved locally, but an error occurred: " +
+        error.message
+      );
 
     }
 
@@ -479,7 +770,7 @@ const BF = (() => {
 
 
   /************************************************
-   * JSONP SYNC
+   * JSONP SYNCHRONISATION
    ************************************************/
 
   function sendToServer(
@@ -490,6 +781,19 @@ const BF = (() => {
     return new Promise(
       (resolve, reject) => {
 
+        if (!apiConfigured()) {
+
+          reject(
+            new Error(
+              "Google Apps Script Web App URL has not been configured."
+            )
+          );
+
+          return;
+
+        }
+
+
         const callbackName =
           "BF_CALLBACK_" +
           Date.now() +
@@ -499,43 +803,187 @@ const BF = (() => {
           );
 
 
-        window[callbackName] =
-          response => {
+        let finished =
+          false;
+
+        let timeoutId =
+          null;
+
+
+        const script =
+          document.createElement(
+            "script"
+          );
+
+
+        function cleanup() {
+
+          if (timeoutId) {
+
+            clearTimeout(
+              timeoutId
+            );
+
+          }
+
+
+          try {
 
             delete window[
               callbackName
             ];
 
+          } catch (error) {
+
+            console.warn(
+              "Callback cleanup failed:",
+              error
+            );
+
+          }
+
+
+          if (
+            script.parentNode
+          ) {
+
+            script.parentNode.removeChild(
+              script
+            );
+
+          }
+
+        }
+
+
+        function succeed(response) {
+
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+
+          cleanup();
+
+          resolve(
+            response
+          );
+
+        }
+
+
+        function fail(error) {
+
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+
+          cleanup();
+
+          reject(
+            error instanceof Error
+              ? error
+              : new Error(
+                  String(error)
+                )
+          );
+
+        }
+
+
+        window[callbackName] =
+          response => {
+
+            /*
+             * Google Apps Script returned JSONP.
+             */
+
             if (
-              script.parentNode
+              !response ||
+              typeof response !== "object"
             ) {
 
-              script.parentNode
-                .removeChild(
-                  script
-                );
+              fail(
+                new Error(
+                  "Invalid response received from Google Apps Script."
+                )
+              );
+
+              return;
 
             }
 
-            resolve(response);
+
+            if (!response.ok) {
+
+              fail(
+                new Error(
+                  response.error ||
+                  "Google Apps Script rejected the record."
+                )
+              );
+
+              return;
+
+            }
+
+
+            succeed(
+              response
+            );
 
           };
 
 
         const json =
-          JSON.stringify(record);
+          JSON.stringify(
+            record
+          );
 
-        const encoded =
-          btoa(
-            unescape(
-              encodeURIComponent(
-                json
+
+        /*
+         * Convert UTF-8 JSON to Base64 safely.
+         */
+
+        let encoded;
+
+        try {
+
+          encoded =
+            btoa(
+              unescape(
+                encodeURIComponent(
+                  json
+                )
               )
             )
-          )
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=+$/, "");
+            .replace(
+              /\+/g,
+              "-"
+            )
+            .replace(
+              /\//g,
+              "_"
+            )
+            .replace(
+              /=+$/,
+              ""
+            );
+
+        } catch (error) {
+
+          fail(
+            new Error(
+              "Unable to encode record for synchronisation."
+            )
+          );
+
+          return;
+
+        }
 
 
         const url =
@@ -553,39 +1001,26 @@ const BF = (() => {
             encoded
           ) +
           "&callback=" +
-          callbackName;
-
-
-        const script =
-          document.createElement(
-            "script"
+          encodeURIComponent(
+            callbackName
           );
 
 
-        script.src = url;
+        script.src =
+          url;
+
+
+        script.async =
+          true;
 
 
         script.onerror =
           () => {
 
-            delete window[
-              callbackName
-            ];
-
-            if (
-              script.parentNode
-            ) {
-
-              script.parentNode
-                .removeChild(
-                  script
-                );
-
-            }
-
-            reject(
+            fail(
               new Error(
-                "Unable to contact Bonnie Farm server."
+                "Unable to contact Google Apps Script. " +
+                "Check the Web App URL, deployment and Internet connection."
               )
             );
 
@@ -597,41 +1032,21 @@ const BF = (() => {
         );
 
 
-        setTimeout(
-          () => {
+        timeoutId =
+          setTimeout(
+            () => {
 
-            if (
-              window[
-                callbackName
-              ]
-            ) {
-
-              delete window[
-                callbackName
-              ];
-
-              if (
-                script.parentNode
-              ) {
-
-                script.parentNode
-                  .removeChild(
-                    script
-                  );
-
-              }
-
-              reject(
+              fail(
                 new Error(
-                  "Server timeout."
+                  "Google Apps Script did not respond within " +
+                  (CONFIG.SYNC_TIMEOUT / 1000) +
+                  " seconds."
                 )
               );
 
-            }
-
-          },
-          20000
-        );
+            },
+            CONFIG.SYNC_TIMEOUT
+          );
 
       }
     );
@@ -645,6 +1060,22 @@ const BF = (() => {
 
   async function syncAll() {
 
+    /*
+     * Do not start another sync while one is already
+     * running.
+     */
+
+    if (syncInProgress) {
+
+      console.log(
+        "Synchronisation already in progress."
+      );
+
+      return;
+
+    }
+
+
     if (!navigator.onLine) {
 
       showMessage(
@@ -656,116 +1087,219 @@ const BF = (() => {
     }
 
 
-    const records =
-      await getAllRecords();
-
-
-    const pending =
-      records.filter(
-        record =>
-          record.status ===
-          "pending"
-      );
-
-
-    if (
-      pending.length === 0
-    ) {
+    if (!apiConfigured()) {
 
       showMessage(
-        "Everything is already synchronised."
+        "Synchronisation is not configured. " +
+        "Enter your Google Apps Script Web App URL in app.js."
       );
-
-      updateCounters();
 
       return;
 
     }
 
 
-    showMessage(
-      "Synchronising " +
-      pending.length +
-      " record(s)..."
-    );
+    syncInProgress =
+      true;
 
 
-    let successful = 0;
+    try {
+
+      await ensureDatabase();
 
 
-    for (
-      const record of pending
-    ) {
-
-      try {
-
-        const action =
-          record.type === "sale"
-            ? "saveSale"
-            : "saveExpense";
+      const records =
+        await getAllRecords();
 
 
-        const response =
-          await sendToServer(
-            action,
-            record
-          );
+      const pending =
+        records.filter(
+          record =>
+            record.status ===
+            "pending"
+        );
 
 
-        if (
-          response &&
-          response.ok
-        ) {
+      if (
+        pending.length === 0
+      ) {
 
-          await deleteRecord(
-            record.offlineId
-          );
+        await updateCounters();
 
-          successful++;
+        showMessage(
+          "Everything is already synchronised."
+        );
+
+        return;
+
+      }
+
+
+      showMessage(
+        "Synchronising " +
+        pending.length +
+        " record(s)..."
+      );
+
+
+      let successful =
+        0;
+
+      let failed =
+        0;
+
+
+      for (
+        const record of pending
+      ) {
+
+        /*
+         * Internet may disappear during synchronisation.
+         */
+
+        if (!navigator.onLine) {
+
+          failed +=
+            pending.length -
+            successful -
+            failed;
+
+          break;
 
         }
 
-      } catch (error) {
 
-        console.log(
-          "Sync failed:",
-          error
+        try {
+
+          const action =
+            record.type === "sale"
+              ? "saveSale"
+              : "saveExpense";
+
+
+          const response =
+            await sendToServer(
+              action,
+              record
+            );
+
+
+          /*
+           * The record is deleted locally ONLY when
+           * Google Apps Script confirms success.
+           */
+
+          if (
+            response &&
+            response.ok === true
+          ) {
+
+            await deleteRecord(
+              record.offlineId
+            );
+
+            successful++;
+
+            console.log(
+              "Synchronised:",
+              record.offlineId,
+              response
+            );
+
+          } else {
+
+            failed++;
+
+            console.error(
+              "Server rejected record:",
+              record,
+              response
+            );
+
+          }
+
+        } catch (error) {
+
+          failed++;
+
+          console.error(
+            "Sync failed for record:",
+            record.offlineId,
+            error
+          );
+
+        }
+
+      }
+
+
+      await updateCounters();
+
+
+      const remainingRecords =
+        await getAllRecords();
+
+
+      const remaining =
+        remainingRecords.filter(
+          record =>
+            record.status ===
+            "pending"
+        ).length;
+
+
+      if (
+        remaining === 0
+      ) {
+
+        showMessage(
+          "Synchronisation completed successfully. " +
+          successful +
+          " record(s) sent to Google Sheets."
+        );
+
+      } else {
+
+        showMessage(
+          successful +
+          " record(s) synchronised. " +
+          remaining +
+          " record(s) remain pending. " +
+          "They will be retried automatically."
         );
 
       }
 
-    }
 
-
-    updateCounters();
-
-
-    const remaining =
-      (
-        await getAllRecords()
-      ).filter(
-        r =>
-          r.status ===
-          "pending"
-      ).length;
-
-
-    if (
-      remaining === 0
-    ) {
-
-      showMessage(
-        "Synchronisation completed successfully."
+      console.log(
+        "Synchronisation finished:",
+        {
+          successful:
+            successful,
+          failed:
+            failed,
+          remaining:
+            remaining
+        }
       );
 
-    } else {
+    } catch (error) {
+
+      console.error(
+        "Synchronisation error:",
+        error
+      );
 
       showMessage(
-        successful +
-        " record(s) synchronised. " +
-        remaining +
-        " record(s) remain pending."
+        "Synchronisation failed: " +
+        error.message +
+        " Records remain safely stored on this device."
       );
+
+    } finally {
+
+      syncInProgress =
+        false;
 
     }
 
@@ -778,32 +1312,66 @@ const BF = (() => {
 
   async function updateCounters() {
 
-    const records =
-      await getAllRecords();
+    try {
 
-    const sales =
-      records.filter(
-        r =>
-          r.type === "sale" &&
-          r.status === "pending"
-      ).length;
-
-    const expenses =
-      records.filter(
-        r =>
-          r.type === "expense" &&
-          r.status === "pending"
-      ).length;
+      await ensureDatabase();
 
 
-    document.getElementById(
-      "salesPending"
-    ).textContent = sales;
+      const records =
+        await getAllRecords();
 
 
-    document.getElementById(
-      "expensesPending"
-    ).textContent = expenses;
+      const sales =
+        records.filter(
+          record =>
+            record.type === "sale" &&
+            record.status === "pending"
+        ).length;
+
+
+      const expenses =
+        records.filter(
+          record =>
+            record.type === "expense" &&
+            record.status === "pending"
+        ).length;
+
+
+      const salesElement =
+        document.getElementById(
+          "salesPending"
+        );
+
+
+      const expensesElement =
+        document.getElementById(
+          "expensesPending"
+        );
+
+
+      if (salesElement) {
+
+        salesElement.textContent =
+          sales;
+
+      }
+
+
+      if (expensesElement) {
+
+        expensesElement.textContent =
+          expenses;
+
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Counter update failed:",
+        error
+      );
+
+    }
 
   }
 
@@ -818,6 +1386,11 @@ const BF = (() => {
       document.getElementById(
         "connectionStatus"
       );
+
+
+    if (!element) {
+      return;
+    }
 
 
     if (navigator.onLine) {
@@ -839,12 +1412,15 @@ const BF = (() => {
    * MESSAGE
    ************************************************/
 
-  function showMessage(message) {
+  function showMessage(
+    message
+  ) {
 
     const element =
       document.getElementById(
         "message"
       );
+
 
     if (element) {
 
@@ -852,6 +1428,12 @@ const BF = (() => {
         message;
 
     }
+
+
+    console.log(
+      "Bonnie Farm:",
+      message
+    );
 
   }
 
@@ -866,26 +1448,64 @@ const BF = (() => {
       today();
 
 
-    document.getElementById(
-      "saleDate"
-    ).value = current;
+    const saleDate =
+      document.getElementById(
+        "saleDate"
+      );
 
 
-    document.getElementById(
-      "saleDay"
-    ).value =
-      dayName(current);
+    const saleDay =
+      document.getElementById(
+        "saleDay"
+      );
 
 
-    document.getElementById(
-      "expenseDate"
-    ).value = current;
+    const expenseDate =
+      document.getElementById(
+        "expenseDate"
+      );
 
 
-    document.getElementById(
-      "expenseDay"
-    ).value =
-      dayName(current);
+    const expenseDay =
+      document.getElementById(
+        "expenseDay"
+      );
+
+
+    if (saleDate) {
+
+      saleDate.value =
+        current;
+
+    }
+
+
+    if (saleDay) {
+
+      saleDay.value =
+        dayName(
+          current
+        );
+
+    }
+
+
+    if (expenseDate) {
+
+      expenseDate.value =
+        current;
+
+    }
+
+
+    if (expenseDay) {
+
+      expenseDay.value =
+        dayName(
+          current
+        );
+
+    }
 
   }
 
@@ -896,38 +1516,59 @@ const BF = (() => {
 
   async function clearCompleted() {
 
-    const records =
-      await getAllRecords();
+    try {
 
-    let count = 0;
+      await ensureDatabase();
 
 
-    for (
-      const record of records
-    ) {
+      const records =
+        await getAllRecords();
 
-      if (
-        record.status ===
-        "completed"
+
+      let count =
+        0;
+
+
+      for (
+        const record of records
       ) {
 
-        await deleteRecord(
-          record.offlineId
-        );
+        if (
+          record.status ===
+          "completed"
+        ) {
 
-        count++;
+          await deleteRecord(
+            record.offlineId
+          );
+
+          count++;
+
+        }
 
       }
 
+
+      showMessage(
+        count +
+        " completed local record(s) cleared."
+      );
+
+
+      await updateCounters();
+
+    } catch (error) {
+
+      console.error(
+        "Clear completed error:",
+        error
+      );
+
+      showMessage(
+        "Unable to clear completed records."
+      );
+
     }
-
-
-    showMessage(
-      count +
-      " completed local record(s) cleared."
-    );
-
-    updateCounters();
 
   }
 
@@ -938,127 +1579,217 @@ const BF = (() => {
 
   async function init() {
 
-    await openDatabase();
+    try {
 
-    setDefaultDates();
-
-    updateConnectionStatus();
-
-    updateCounters();
+      await openDatabase();
 
 
-    document
-      .getElementById(
-        "salesForm"
-      )
-      .addEventListener(
-        "submit",
-        event => {
+      setDefaultDates();
 
-          event.preventDefault();
 
-          saveSale();
+      updateConnectionStatus();
+
+
+      await updateCounters();
+
+
+      /*
+       * SALES FORM
+       */
+
+      const salesForm =
+        document.getElementById(
+          "salesForm"
+        );
+
+
+      if (salesForm) {
+
+        salesForm.addEventListener(
+          "submit",
+          async event => {
+
+            event.preventDefault();
+
+            await saveSale();
+
+          }
+        );
+
+      }
+
+
+      /*
+       * EXPENSE FORM
+       */
+
+      const expenseForm =
+        document.getElementById(
+          "expenseForm"
+        );
+
+
+      if (expenseForm) {
+
+        expenseForm.addEventListener(
+          "submit",
+          async event => {
+
+            event.preventDefault();
+
+            await saveExpense();
+
+          }
+        );
+
+      }
+
+
+      /*
+       * INTERNET RESTORED
+       */
+
+      window.addEventListener(
+        "online",
+        async () => {
+
+          updateConnectionStatus();
+
+
+          showMessage(
+            "Internet connection restored. " +
+            "Synchronising..."
+          );
+
+
+          await syncAll();
 
         }
       );
 
 
-    document
-      .getElementById(
-        "expenseForm"
-      )
-      .addEventListener(
-        "submit",
-        event => {
+      /*
+       * INTERNET LOST
+       */
 
-          event.preventDefault();
+      window.addEventListener(
+        "offline",
+        () => {
 
-          saveExpense();
+          updateConnectionStatus();
+
+
+          showMessage(
+            "Offline mode activated. " +
+            "Your entries will remain safely stored on this device."
+          );
 
         }
       );
 
 
-    window.addEventListener(
-      "online",
-      () => {
+      /*
+       * PERIODIC SYNCHRONISATION
+       */
 
-        updateConnectionStatus();
+      setInterval(
+        async () => {
 
-        showMessage(
-          "Internet connection restored. Synchronising..."
-        );
+          if (
+            navigator.onLine &&
+            !syncInProgress
+          ) {
 
-        syncAll();
+            await syncAll();
 
-      }
-    );
+          }
 
-
-    window.addEventListener(
-      "offline",
-      () => {
-
-        updateConnectionStatus();
-
-        showMessage(
-          "Offline mode activated. Your entries will remain on this device."
-        );
-
-      }
-    );
+        },
+        CONFIG.SYNC_INTERVAL
+      );
 
 
-    /*
-     * Try synchronisation periodically.
-     */
-    setInterval(
-      () => {
+      /*
+       * REGISTER SERVICE WORKER
+       */
 
-        if (navigator.onLine) {
-          syncAll();
+      if (
+        "serviceWorker" in navigator
+      ) {
+
+        try {
+
+          await navigator.serviceWorker.register(
+            "./sw.js"
+          );
+
+
+          console.log(
+            "Bonnie Farm Service Worker registered."
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Service Worker registration failed:",
+            error
+          );
+
         }
 
-      },
-      30000
-    );
+      }
 
 
-    /*
-     * Register the Service Worker.
-     */
-    if (
-      "serviceWorker" in navigator
-    ) {
+      /*
+       * Try synchronisation when the application
+       * starts.
+       */
 
-      try {
+      if (navigator.onLine) {
 
-        await navigator.serviceWorker.register(
-          "./sw.js"
-        );
+        setTimeout(
+          () => {
 
-        console.log(
-          "Bonnie Farm Service Worker registered."
-        );
+            syncAll();
 
-      } catch (error) {
-
-        console.error(
-          "Service Worker registration failed:",
-          error
+          },
+          1000
         );
 
       }
+
+
+      console.log(
+        "Bonnie Farm PWA initialised successfully."
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Bonnie Farm PWA initialisation failed:",
+        error
+      );
+
+      showMessage(
+        "Application initialisation failed: " +
+        error.message
+      );
 
     }
 
   }
 
 
+  /************************************************
+   * PUBLIC FUNCTIONS
+   ************************************************/
+
   return {
 
     init,
+
     syncAll,
+
     clearCompleted
 
   };
@@ -1066,7 +1797,15 @@ const BF = (() => {
 })();
 
 
+/************************************************
+ * START APPLICATION
+ ************************************************/
+
 document.addEventListener(
   "DOMContentLoaded",
-  () => BF.init()
+  () => {
+
+    BF.init();
+
+  }
 );
