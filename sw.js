@@ -1,16 +1,27 @@
+/************************************************
+ * BONNIE FARM PWA SERVICE WORKER
+ ************************************************/
+
 const CACHE_NAME =
-  "bonnie-farm-pwa-v1";
+  "bonnie-farm-pwa-v2";
 
 
 const FILES_TO_CACHE = [
 
   "./",
+
   "./index.html",
+
   "./app.js",
+
   "./manifest.json"
 
 ];
 
+
+/************************************************
+ * INSTALL
+ ************************************************/
 
 self.addEventListener(
   "install",
@@ -19,21 +30,35 @@ self.addEventListener(
     event.waitUntil(
 
       caches
-        .open(CACHE_NAME)
+        .open(
+          CACHE_NAME
+        )
         .then(
-          cache =>
-            cache.addAll(
+          cache => {
+
+            return cache.addAll(
               FILES_TO_CACHE
-            )
+            );
+
+          }
         )
 
     );
+
+
+    /*
+     * Activate the new service worker immediately.
+     */
 
     self.skipWaiting();
 
   }
 );
 
+
+/************************************************
+ * ACTIVATE
+ ************************************************/
 
 self.addEventListener(
   "activate",
@@ -44,8 +69,9 @@ self.addEventListener(
       caches
         .keys()
         .then(
-          keys =>
-            Promise.all(
+          keys => {
+
+            return Promise.all(
 
               keys
                 .filter(
@@ -55,12 +81,22 @@ self.addEventListener(
                 )
                 .map(
                   key =>
-                    caches.delete(key)
+                    caches.delete(
+                      key
+                    )
                 )
-            )
+
+            );
+
+          }
         )
 
     );
+
+
+    /*
+     * Take control of all open PWA pages.
+     */
 
     self.clients.claim();
 
@@ -68,29 +104,106 @@ self.addEventListener(
 );
 
 
+/************************************************
+ * FETCH
+ ************************************************/
+
 self.addEventListener(
   "fetch",
   event => {
 
+    const request =
+      event.request;
+
+
     /*
-     * Only handle normal GET requests.
-     * The Google Apps Script synchronisation
-     * requests are not cached.
+     * Only intercept GET requests.
      */
 
     if (
-      event.request.method !==
+      request.method !==
       "GET"
     ) {
+
       return;
+
     }
 
+
+    const url =
+      new URL(
+        request.url
+      );
+
+
+    /**********************************************
+     * VERY IMPORTANT
+     *
+     * NEVER CACHE GOOGLE APPS SCRIPT REQUESTS.
+     *
+     * The Bonnie Farm PWA uses GET/JSONP to send
+     * sales and expenses to Google Apps Script.
+     **********************************************/
+
+    if (
+
+      url.hostname ===
+      "script.google.com"
+
+      ||
+
+      url.hostname ===
+      "script.googleusercontent.com"
+
+    ) {
+
+      event.respondWith(
+
+        fetch(
+          request,
+          {
+            cache: "no-store"
+          }
+        )
+
+      );
+
+      return;
+
+    }
+
+
+    /**********************************************
+     * DO NOT CACHE NON-HTTP REQUESTS
+     **********************************************/
+
+    if (
+      url.protocol !==
+      "http:" &&
+      url.protocol !==
+      "https:"
+    ) {
+
+      return;
+
+    }
+
+
+    /**********************************************
+     * PWA CACHE STRATEGY
+     *
+     * 1. Look in cache first.
+     * 2. If not cached, go to network.
+     * 3. Cache successful local application
+     *    resources.
+     * 4. If network fails, return index.html.
+     **********************************************/
 
     event.respondWith(
 
       caches
         .match(
-          event.request
+          request
         )
         .then(
           cachedResponse => {
@@ -105,35 +218,74 @@ self.addEventListener(
 
 
             return fetch(
-              event.request
+              request
             )
             .then(
               response => {
 
+                /*
+                 * Only cache valid responses.
+                 */
+
+                if (
+                  !response ||
+                  response.status !== 200 ||
+                  response.type !==
+                    "basic"
+                ) {
+
+                  return response;
+
+                }
+
+
                 const copy =
                   response.clone();
+
 
                 caches
                   .open(
                     CACHE_NAME
                   )
                   .then(
-                    cache =>
+                    cache => {
+
                       cache.put(
-                        event.request,
+                        request,
                         copy
-                      )
+                      );
+
+                    }
+                  )
+                  .catch(
+                    error => {
+
+                      console.warn(
+                        "Unable to cache resource:",
+                        error
+                      );
+
+                    }
                   );
+
 
                 return response;
 
               }
             )
             .catch(
-              () =>
-                caches.match(
+              () => {
+
+                /*
+                 * When offline, return the cached
+                 * application shell.
+                 */
+
+                return caches.match(
                   "./index.html"
-                )
+                );
+
+              }
             );
 
           }
