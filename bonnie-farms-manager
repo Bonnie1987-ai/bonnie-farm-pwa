@@ -1,0 +1,714 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+
+const FONT_LINK = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap";
+
+const COLORS = {
+  cream: "#F6F1E4",
+  ink: "#2A2318",
+  green: "#3F5B37",
+  greenLight: "#E7EEE3",
+  amber: "#B9740F",
+  amberLight: "#F7EAD3",
+  rust: "#9A3B2C",
+  rustLight: "#F3E1DC",
+  surface: "#FFFDF6",
+  line: "#DCD3BC",
+  muted: "#7A7053",
+};
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function fmtUGX(n) {
+  const v = Number(n) || 0;
+  return "UGX " + Math.round(v).toLocaleString("en-UG");
+}
+
+function fmtDate(d) {
+  if (!d) return "—";
+  const dt = new Date(d + "T00:00:00");
+  if (isNaN(dt.getTime())) return d;
+  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function daysAgo(dateStr) {
+  const dt = new Date(dateStr + "T00:00:00");
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return Math.round((now - dt) / 86400000);
+}
+
+async function loadKey(key, fallback) {
+  try {
+    const res = await window.storage.get(key, false);
+    if (res && res.value) return JSON.parse(res.value);
+    return fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+async function saveKey(key, value) {
+  try {
+    await window.storage.set(key, JSON.stringify(value), false);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+const NAV = [
+  { id: "dashboard", label: "Dashboard", icon: "grid" },
+  { id: "batches", label: "Flock batches", icon: "birds" },
+  { id: "production", label: "Egg production", icon: "egg" },
+  { id: "feed", label: "Feed & stock", icon: "feed" },
+  { id: "health", label: "Health & mortality", icon: "health" },
+  { id: "finance", label: "Finance", icon: "cash" },
+];
+
+const ICONS = {
+  grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+  birds: "M4 15c1-4 4-7 8-7s7 3 8 7M8 8V4l3 2M6 15l-2 5M18 15l2 5",
+  egg: "M12 3c4 3 7 9 7 13a7 7 0 0 1-14 0c0-4 3-10 7-13z",
+  feed: "M4 8h16l-2 12H6L4 8zM8 8V6a4 4 0 0 1 8 0v2",
+  health: "M12 21s-7-4.5-9.5-9C.5 8 2 4 6 4c2 0 4 1.5 6 4 2-2.5 4-4 6-4 4 0 5.5 4 3.5 8-2.5 4.5-9.5 9-9.5 9z",
+  cash: "M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 9v5M18 9v5",
+};
+
+function Icon({ name, size = 18 }) {
+  const d = ICONS[name];
+  if (!d) return null;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d={d} />
+    </svg>
+  );
+}
+
+function Field({ f, value, onChange, options }) {
+  const commonStyle = {
+    width: "100%",
+    padding: "9px 10px",
+    borderRadius: 4,
+    border: `1px solid ${COLORS.line}`,
+    background: COLORS.surface,
+    fontFamily: "'IBM Plex Sans', sans-serif",
+    fontSize: 14,
+    color: COLORS.ink,
+    boxSizing: "border-box",
+  };
+  if (f.type === "select") {
+    const opts = f.dynamicOptions ? options : f.options;
+    return (
+      <select style={commonStyle} value={value ?? ""} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{f.placeholder || "Select…"}</option>
+        {(opts || []).map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
+    );
+  }
+  if (f.type === "textarea") {
+    return (
+      <textarea
+        style={{ ...commonStyle, minHeight: 60, resize: "vertical" }}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={f.placeholder || ""}
+      />
+    );
+  }
+  return (
+    <input
+      style={commonStyle}
+      type={f.type}
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={f.placeholder || ""}
+      min={f.type === "number" ? 0 : undefined}
+    />
+  );
+}
+
+function RecordManager({ storageKey, fields, columns, batchOptions, title, emptyHint, extraSummary }) {
+  const [records, setRecords] = useState(null);
+  const [form, setForm] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    loadKey(storageKey, []).then((data) => {
+      if (alive) setRecords(data);
+    });
+    return () => { alive = false; };
+  }, [storageKey]);
+
+  const resetForm = () => {
+    setForm({});
+    setEditingId(null);
+    setError("");
+  };
+
+  const startEdit = (rec) => {
+    setForm(rec);
+    setEditingId(rec.id);
+    setError("");
+  };
+
+  const persist = async (next) => {
+    setRecords(next);
+    setSaving(true);
+    await saveKey(storageKey, next);
+    setSaving(false);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    for (const f of fields) {
+      if (f.required && !String(form[f.key] ?? "").trim()) {
+        setError(`${f.label} is required.`);
+        return;
+      }
+    }
+    if (editingId) {
+      const next = records.map((r) => (r.id === editingId ? { ...form, id: editingId } : r));
+      await persist(next);
+    } else {
+      const next = [{ ...form, id: uid() }, ...records];
+      await persist(next);
+    }
+    resetForm();
+  };
+
+  const handleDelete = async (id) => {
+    const next = records.filter((r) => r.id !== id);
+    await persist(next);
+    if (editingId === id) resetForm();
+  };
+
+  if (records === null) {
+    return <div style={{ padding: "2rem 0", color: COLORS.muted, fontSize: 14 }}>Loading records…</div>;
+  }
+
+  const sorted = [...records].sort((a, b) => (b.date || "").localeCompare(a.date || "") || 0);
+
+  return (
+    <div>
+      {extraSummary ? extraSummary(records) : null}
+
+      <form onSubmit={handleSubmit} style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.line}`,
+        borderRadius: 6,
+        padding: "18px 20px",
+        marginBottom: 24,
+      }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontSize: 16, fontWeight: 600, marginBottom: 14, color: COLORS.ink }}>
+          {editingId ? "Update entry" : `Add new ${title.toLowerCase()} entry`}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px 16px" }}>
+          {fields.map((f) => (
+            <div key={f.key}>
+              <label style={{ display: "block", fontSize: 12.5, color: COLORS.muted, marginBottom: 5, fontWeight: 500 }}>
+                {f.label}{f.required ? " *" : ""}
+              </label>
+              <Field
+                f={f}
+                value={form[f.key]}
+                onChange={(v) => setForm((s) => ({ ...s, [f.key]: v }))}
+                options={f.dynamicOptions === "batches" ? batchOptions : f.options}
+              />
+            </div>
+          ))}
+        </div>
+        {error ? <div style={{ color: COLORS.rust, fontSize: 13, marginTop: 10 }}>{error}</div> : null}
+        <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+          <button type="submit" style={{
+            background: COLORS.green,
+            color: "#fff",
+            border: "none",
+            borderRadius: 4,
+            padding: "9px 18px",
+            fontSize: 13.5,
+            fontWeight: 500,
+            fontFamily: "'IBM Plex Sans', sans-serif",
+            cursor: "pointer",
+          }}>
+            {editingId ? "Save changes" : "Add entry"}
+          </button>
+          {editingId ? (
+            <button type="button" onClick={resetForm} style={{
+              background: "transparent",
+              color: COLORS.ink,
+              border: `1px solid ${COLORS.line}`,
+              borderRadius: 4,
+              padding: "9px 18px",
+              fontSize: 13.5,
+              fontFamily: "'IBM Plex Sans', sans-serif",
+              cursor: "pointer",
+            }}>
+              Cancel
+            </button>
+          ) : null}
+          {saving ? <span style={{ alignSelf: "center", fontSize: 12, color: COLORS.muted }}>Saving…</span> : null}
+        </div>
+      </form>
+
+      {sorted.length === 0 ? (
+        <div style={{ padding: "24px 0", color: COLORS.muted, fontSize: 14, borderTop: `1px solid ${COLORS.line}` }}>
+          {emptyHint || "No entries yet. Add your first one above."}
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${COLORS.ink}` }}>
+                {columns.map((c) => (
+                  <th key={c.key} style={{ textAlign: c.align || "left", padding: "8px 10px", fontWeight: 600, color: COLORS.ink, fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                    {c.label}
+                  </th>
+                ))}
+                <th style={{ padding: "8px 10px" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => (
+                <tr key={r.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  {columns.map((c) => (
+                    <td key={c.key} style={{ textAlign: c.align || "left", padding: "8px 10px", color: COLORS.ink }}>
+                      {c.render ? c.render(r) : (r[c.key] ?? "—")}
+                    </td>
+                  ))}
+                  <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => startEdit(r)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.green, fontSize: 12.5, marginRight: 12, fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                      Edit
+                    </button>
+                    <button onClick={() => handleDelete(r.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.rust, fontSize: 12.5, fontFamily: "'IBM Plex Sans', sans-serif" }}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, tone }) {
+  const bg = tone === "amber" ? COLORS.amberLight : tone === "rust" ? COLORS.rustLight : COLORS.greenLight;
+  const fg = tone === "amber" ? COLORS.amber : tone === "rust" ? COLORS.rust : COLORS.green;
+  return (
+    <div style={{ background: bg, borderRadius: 6, padding: "16px 18px", minWidth: 150 }}>
+      <div style={{ fontSize: 12.5, color: COLORS.muted, marginBottom: 6, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontFamily: "'Fraunces', serif", fontSize: 26, fontWeight: 600, color: fg }}>{value}</div>
+    </div>
+  );
+}
+
+function Dashboard({ data }) {
+  const { batches, production, feed, health, finance } = data;
+
+  const activeBatches = batches.filter((b) => b.status === "Active");
+  const totalBirds = activeBatches.reduce((s, b) => s + (Number(b.currentCount) || 0), 0);
+
+  const today = todayISO();
+  const eggsToday = production
+    .filter((p) => p.date === today)
+    .reduce((s, p) => s + (Number(p.traysCollected) || 0) * 30 + (Number(p.looseEggs) || 0) - (Number(p.broken) || 0), 0);
+
+  const feedThisWeek = feed
+    .filter((f) => daysAgo(f.date) <= 6 && daysAgo(f.date) >= 0)
+    .reduce((s, f) => s + (Number(f.quantityKg) || 0), 0);
+
+  const nowMonth = today.slice(0, 7);
+  const mortalityThisMonth = health
+    .filter((h) => h.recordType === "Mortality" && (h.date || "").startsWith(nowMonth))
+    .reduce((s, h) => s + (Number(h.count) || 0), 0);
+
+  const incomeThisMonth = finance
+    .filter((f) => f.type === "Income" && (f.date || "").startsWith(nowMonth))
+    .reduce((s, f) => s + (Number(f.amount) || 0), 0);
+  const expenseThisMonth = finance
+    .filter((f) => f.type === "Expense" && (f.date || "").startsWith(nowMonth))
+    .reduce((s, f) => s + (Number(f.amount) || 0), 0);
+  const netThisMonth = incomeThisMonth - expenseThisMonth;
+
+  const recentMortality = health.filter((h) => h.recordType === "Mortality").sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 5);
+  const recentFinance = [...finance].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 6);
+
+  return (
+    <div>
+      <div style={{ fontFamily: "'Fraunces', serif", fontSize: 28, fontWeight: 600, color: COLORS.ink, marginBottom: 4 }}>
+        Farm overview
+      </div>
+      <div style={{ fontSize: 14, color: COLORS.muted, marginBottom: 24 }}>
+        {fmtDate(today)} · {activeBatches.length} active batch{activeBatches.length === 1 ? "" : "es"}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 32 }}>
+        <StatCard label="Total birds on farm" value={totalBirds.toLocaleString()} />
+        <StatCard label="Eggs collected today" value={eggsToday.toLocaleString()} tone="amber" />
+        <StatCard label="Feed used (7 days)" value={`${feedThisWeek.toLocaleString()} kg`} />
+        <StatCard label="Mortality this month" value={mortalityThisMonth.toLocaleString()} tone="rust" />
+        <StatCard label="Net this month" value={fmtUGX(netThisMonth)} tone={netThisMonth >= 0 ? "green" : "rust"} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 28 }}>
+        <div>
+          <div style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, marginBottom: 10, color: COLORS.ink }}>
+            Recent finance entries
+          </div>
+          {recentFinance.length === 0 ? (
+            <div style={{ fontSize: 13.5, color: COLORS.muted }}>No finance entries logged yet.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <tbody>
+                {recentFinance.map((f) => (
+                  <tr key={f.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: "7px 4px", color: COLORS.muted, width: 90 }}>{fmtDate(f.date)}</td>
+                    <td style={{ padding: "7px 4px" }}>{f.category || "—"}</td>
+                    <td style={{ padding: "7px 4px", textAlign: "right", fontWeight: 500, color: f.type === "Income" ? COLORS.green : COLORS.rust }}>
+                      {f.type === "Income" ? "+" : "−"}{fmtUGX(f.amount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, marginBottom: 10, color: COLORS.ink }}>
+            Recent mortality
+          </div>
+          {recentMortality.length === 0 ? (
+            <div style={{ fontSize: 13.5, color: COLORS.muted }}>No mortality logged — keep it that way.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <tbody>
+                {recentMortality.map((h) => (
+                  <tr key={h.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <td style={{ padding: "7px 4px", color: COLORS.muted, width: 90 }}>{fmtDate(h.date)}</td>
+                    <td style={{ padding: "7px 4px" }}>{h.batchName || "—"}</td>
+                    <td style={{ padding: "7px 4px", textAlign: "right", fontWeight: 500, color: COLORS.rust }}>{h.count || 0} birds</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const BIRD_TYPES = ["Layers", "Broilers", "Kienyeji / Local", "Breeders"];
+const BATCH_STATUS = ["Active", "Sold", "Closed"];
+const FEED_TYPES = ["Chick Mash", "Growers Mash", "Layers Mash", "Broiler Starter", "Broiler Finisher", "Other"];
+const HEALTH_TYPES = ["Vaccination", "Treatment", "Health check", "Mortality"];
+const FINANCE_TYPES = ["Income", "Expense"];
+const INCOME_CATEGORIES = ["Egg sales", "Bird sales", "Manure sales", "Other income"];
+const EXPENSE_CATEGORIES = ["Feed purchase", "Chicks / birds", "Medication & vaccines", "Labor", "Utilities", "Transport", "Equipment", "Other expense"];
+
+export default function App() {
+  const [active, setActive] = useState("dashboard");
+  const [dash, setDash] = useState({ batches: [], production: [], feed: [], health: [], finance: [] });
+  const [dashLoading, setDashLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      loadKey("batches", []),
+      loadKey("production", []),
+      loadKey("feed", []),
+      loadKey("health", []),
+      loadKey("finance", []),
+    ]).then(([batches, production, feed, health, finance]) => {
+      if (alive) {
+        setDash({ batches, production, feed, health, finance });
+        setDashLoading(false);
+      }
+    });
+    return () => { alive = false; };
+  }, [active, refreshTick]);
+
+  const batchNames = useMemo(
+    () => dash.batches.filter((b) => b.status === "Active").map((b) => b.batchName).filter(Boolean),
+    [dash.batches]
+  );
+
+  const goTo = (id) => {
+    setActive(id);
+    setRefreshTick((t) => t + 1);
+  };
+
+  return (
+    <div style={{ background: COLORS.cream, minHeight: "100vh", fontFamily: "'IBM Plex Sans', sans-serif", color: COLORS.ink }}>
+      <style>{`
+        @import url('${FONT_LINK}');
+        * { box-sizing: border-box; }
+        input:focus, select:focus, textarea:focus { outline: 2px solid ${COLORS.green}; outline-offset: 1px; }
+        button:focus-visible { outline: 2px solid ${COLORS.green}; outline-offset: 1px; }
+        @media (max-width: 760px) {
+          .bf-shell { flex-direction: column; }
+          .bf-sidebar { width: 100% !important; flex-direction: row !important; overflow-x: auto; padding: 10px !important; }
+          .bf-sidebar-title { display: none; }
+          .bf-nav-item { white-space: nowrap; }
+        }
+      `}</style>
+
+      <div className="bf-shell" style={{ display: "flex", minHeight: "100vh" }}>
+        <div className="bf-sidebar" style={{
+          width: 226,
+          flexShrink: 0,
+          background: COLORS.ink,
+          color: "#EFE9D8",
+          padding: "26px 18px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}>
+          <div className="bf-sidebar-title" style={{ marginBottom: 22, paddingLeft: 4 }}>
+            <div style={{ fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, lineHeight: 1.25, color: "#F6F1E4" }}>
+              Bonnie Farms
+            </div>
+            <div style={{ fontSize: 11.5, letterSpacing: 0.3, color: "#B9AE8C", marginTop: 2 }}>
+              SMC LTD · Farm register
+            </div>
+          </div>
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              className="bf-nav-item"
+              onClick={() => goTo(n.id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                background: active === n.id ? "rgba(246,241,228,0.12)" : "transparent",
+                border: "none",
+                borderLeft: active === n.id ? `3px solid ${COLORS.amber}` : "3px solid transparent",
+                color: active === n.id ? "#F6F1E4" : "#C9BFA1",
+                padding: "10px 10px",
+                borderRadius: 3,
+                fontSize: 13.5,
+                fontFamily: "'IBM Plex Sans', sans-serif",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              <Icon name={n.icon} size={17} />
+              {n.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, padding: "32px 40px", maxWidth: 980 }}>
+          {active === "dashboard" && (dashLoading ? (
+            <div style={{ color: COLORS.muted, fontSize: 14 }}>Loading farm records…</div>
+          ) : (
+            <Dashboard data={dash} />
+          ))}
+
+          {active === "batches" && (
+            <div>
+              <SectionHeader title="Flock batches" subtitle="Register each intake of birds and keep their live count current." />
+              <RecordManager
+                storageKey="batches"
+                title="batch"
+                emptyHint="No batches registered yet. Add your first flock batch above."
+                fields={[
+                  { key: "batchName", label: "Batch name / ID", type: "text", required: true, placeholder: "e.g. Batch A - Sep 2026" },
+                  { key: "breed", label: "Breed", type: "text", placeholder: "e.g. Isa Brown" },
+                  { key: "birdType", label: "Bird type", type: "select", options: BIRD_TYPES },
+                  { key: "arrivalDate", label: "Arrival date", type: "date" },
+                  { key: "initialCount", label: "Initial count", type: "number" },
+                  { key: "currentCount", label: "Current count", type: "number" },
+                  { key: "status", label: "Status", type: "select", options: BATCH_STATUS },
+                  { key: "notes", label: "Notes", type: "textarea" },
+                ]}
+                columns={[
+                  { key: "batchName", label: "Batch" },
+                  { key: "birdType", label: "Type" },
+                  { key: "breed", label: "Breed" },
+                  { key: "arrivalDate", label: "Arrived", render: (r) => fmtDate(r.arrivalDate) },
+                  { key: "initialCount", label: "Initial", align: "right" },
+                  { key: "currentCount", label: "Current", align: "right" },
+                  { key: "status", label: "Status" },
+                ]}
+              />
+            </div>
+          )}
+
+          {active === "production" && (
+            <div>
+              <SectionHeader title="Egg production" subtitle="Log daily collection per batch — trays, loose eggs and breakages." />
+              <RecordManager
+                storageKey="production"
+                title="production"
+                emptyHint="No production entries yet. Log today's collection above."
+                batchOptions={batchNames}
+                fields={[
+                  { key: "date", label: "Date", type: "date", required: true },
+                  { key: "batchName", label: "Batch", type: "select", dynamicOptions: "batches" },
+                  { key: "traysCollected", label: "Trays collected (30/tray)", type: "number" },
+                  { key: "looseEggs", label: "Loose eggs", type: "number" },
+                  { key: "broken", label: "Broken / cracked", type: "number" },
+                  { key: "notes", label: "Notes", type: "textarea" },
+                ]}
+                columns={[
+                  { key: "date", label: "Date", render: (r) => fmtDate(r.date) },
+                  { key: "batchName", label: "Batch" },
+                  { key: "traysCollected", label: "Trays", align: "right" },
+                  { key: "looseEggs", label: "Loose", align: "right" },
+                  { key: "broken", label: "Broken", align: "right" },
+                  {
+                    key: "total", label: "Net eggs", align: "right",
+                    render: (r) => ((Number(r.traysCollected) || 0) * 30 + (Number(r.looseEggs) || 0) - (Number(r.broken) || 0)).toLocaleString(),
+                  },
+                ]}
+              />
+            </div>
+          )}
+
+          {active === "feed" && (
+            <div>
+              <SectionHeader title="Feed & stock" subtitle="Track feed given out per batch, and its cost." />
+              <RecordManager
+                storageKey="feed"
+                title="feed"
+                emptyHint="No feed entries yet. Log a feeding above."
+                batchOptions={batchNames}
+                fields={[
+                  { key: "date", label: "Date", type: "date", required: true },
+                  { key: "batchName", label: "Batch", type: "select", dynamicOptions: "batches" },
+                  { key: "feedType", label: "Feed type", type: "select", options: FEED_TYPES },
+                  { key: "quantityKg", label: "Quantity (kg)", type: "number" },
+                  { key: "costUGX", label: "Cost (UGX)", type: "number" },
+                  { key: "notes", label: "Notes", type: "textarea" },
+                ]}
+                columns={[
+                  { key: "date", label: "Date", render: (r) => fmtDate(r.date) },
+                  { key: "batchName", label: "Batch" },
+                  { key: "feedType", label: "Feed type" },
+                  { key: "quantityKg", label: "Kg", align: "right" },
+                  { key: "costUGX", label: "Cost", align: "right", render: (r) => fmtUGX(r.costUGX) },
+                ]}
+              />
+            </div>
+          )}
+
+          {active === "health" && (
+            <div>
+              <SectionHeader title="Health & mortality" subtitle="Vaccinations, treatments, health checks and mortality in one log." />
+              <RecordManager
+                storageKey="health"
+                title="health"
+                emptyHint="No health records yet. Log a vaccination, treatment or mortality above."
+                batchOptions={batchNames}
+                fields={[
+                  { key: "date", label: "Date", type: "date", required: true },
+                  { key: "batchName", label: "Batch", type: "select", dynamicOptions: "batches" },
+                  { key: "recordType", label: "Record type", type: "select", options: HEALTH_TYPES, required: true },
+                  { key: "description", label: "Description", type: "text", placeholder: "e.g. Newcastle disease vaccine" },
+                  { key: "count", label: "Birds affected / count", type: "number" },
+                  { key: "costUGX", label: "Cost (UGX)", type: "number" },
+                  { key: "notes", label: "Notes", type: "textarea" },
+                ]}
+                columns={[
+                  { key: "date", label: "Date", render: (r) => fmtDate(r.date) },
+                  { key: "batchName", label: "Batch" },
+                  {
+                    key: "recordType", label: "Type",
+                    render: (r) => (
+                      <span style={{
+                        fontSize: 12,
+                        padding: "2px 8px",
+                        borderRadius: 3,
+                        background: r.recordType === "Mortality" ? COLORS.rustLight : COLORS.greenLight,
+                        color: r.recordType === "Mortality" ? COLORS.rust : COLORS.green,
+                      }}>{r.recordType}</span>
+                    ),
+                  },
+                  { key: "description", label: "Description" },
+                  { key: "count", label: "Count", align: "right" },
+                  { key: "costUGX", label: "Cost", align: "right", render: (r) => fmtUGX(r.costUGX) },
+                ]}
+              />
+            </div>
+          )}
+
+          {active === "finance" && (
+            <div>
+              <SectionHeader title="Finance" subtitle="Every shilling in and out — egg sales, bird sales, feed, labor and more." />
+              <RecordManager
+                storageKey="finance"
+                title="finance"
+                emptyHint="No finance entries yet. Log income or an expense above."
+                extraSummary={(records) => {
+                  const income = records.filter((r) => r.type === "Income").reduce((s, r) => s + (Number(r.amount) || 0), 0);
+                  const expense = records.filter((r) => r.type === "Expense").reduce((s, r) => s + (Number(r.amount) || 0), 0);
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 24 }}>
+                      <StatCard label="Total income" value={fmtUGX(income)} tone="green" />
+                      <StatCard label="Total expense" value={fmtUGX(expense)} tone="rust" />
+                      <StatCard label="Net balance" value={fmtUGX(income - expense)} tone={income - expense >= 0 ? "green" : "rust"} />
+                    </div>
+                  );
+                }}
+                fields={[
+                  { key: "date", label: "Date", type: "date", required: true },
+                  { key: "type", label: "Type", type: "select", options: FINANCE_TYPES, required: true },
+                  {
+                    key: "category", label: "Category", type: "select",
+                    options: [...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES],
+                  },
+                  { key: "amount", label: "Amount (UGX)", type: "number", required: true },
+                  { key: "description", label: "Description", type: "text" },
+                ]}
+                columns={[
+                  { key: "date", label: "Date", render: (r) => fmtDate(r.date) },
+                  {
+                    key: "type", label: "Type",
+                    render: (r) => (
+                      <span style={{ color: r.type === "Income" ? COLORS.green : COLORS.rust, fontWeight: 500 }}>{r.type}</span>
+                    ),
+                  },
+                  { key: "category", label: "Category" },
+                  { key: "description", label: "Description" },
+                  {
+                    key: "amount", label: "Amount", align: "right",
+                    render: (r) => (
+                      <span style={{ color: r.type === "Income" ? COLORS.green : COLORS.rust, fontWeight: 500 }}>
+                        {r.type === "Income" ? "+" : "−"}{fmtUGX(r.amount)}
+                      </span>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ title, subtitle }) {
+  return (
+    <div style={{ marginBottom: 22, paddingBottom: 16, borderBottom: `1px solid ${COLORS.line}` }}>
+      <div style={{ fontFamily: "'Fraunces', serif", fontSize: 26, fontWeight: 600, color: COLORS.ink }}>{title}</div>
+      <div style={{ fontSize: 14, color: COLORS.muted, marginTop: 4 }}>{subtitle}</div>
+    </div>
+  );
+}
